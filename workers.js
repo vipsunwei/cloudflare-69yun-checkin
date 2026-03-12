@@ -24,16 +24,24 @@ export default {
 
     // 根路径 - 显示帮助信息
     if (pathname === "/") {
+      const maskedUser = `${user.substring(0, 1)}****${user.substring(user.length - 5)}`;
+      const maskedPass = `${pass.substring(0, 1)}****${pass.substring(pass.length - 1)}`;
+      const qywxStatus = QYWXKEY ? "✅ 已启用" : "❌ 未启用";
       const helpText = `
 🚀 机场签到 Workers
 
+当前配置：
+🔹 账号: ${maskedUser}
+🔹 密码: ${maskedPass}
+📢 企业微信推送: ${qywxStatus}
+
 可用路径：
-• /${pass}  - 手动执行签到
+• /{完整密码}  - 手动执行签到
 • /qywx    - 测试企业微信 Webhook 配置（发送测试消息）
 • /status  - 查看最后一次签到结果
 • /debug   - 开启调试模式并执行签到（会在响应中返回详细日志）
 
-提示：将 ${pass} 替换为你的实际密码
+提示：将 {完整密码} 替换为你的实际密码
       `.trim();
       return new Response(helpText, {
         status: 200,
@@ -66,7 +74,7 @@ export default {
       const originalLog = log;
 
       // 捕获日志
-      log = function(message, data = null) {
+      log = function (message, data = null) {
         logs.push(`[DEBUG] ${message}`);
         if (data !== null) {
           logs.push(JSON.stringify(data, null, 2));
@@ -81,7 +89,7 @@ export default {
           {
             status: 200,
             headers: { "Content-Type": "text/plain;charset=UTF-8" },
-          }
+          },
         );
       } catch (error) {
         return new Response(
@@ -89,7 +97,7 @@ export default {
           {
             status: 500,
             headers: { "Content-Type": "text/plain;charset=UTF-8" },
-          }
+          },
         );
       } finally {
         DEBUG_MODE = false;
@@ -105,7 +113,7 @@ export default {
         });
       }
 
-      const testMessage = `🧪 企业微信 Webhook 测试消息\n\n✅ 配置成功！\n\n📅 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+      const testMessage = `🧪 企业微信 Webhook 测试消息\n\n✅ 配置成功！\n\n📅 时间: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`;
 
       try {
         await sendWechatNotification(testMessage);
@@ -222,11 +230,12 @@ async function checkin() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Accept: "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Origin": domain,
-        "Referer": `${domain}/auth/login`,
+        Origin: domain,
+        Referer: `${domain}/auth/login`,
       },
       body: JSON.stringify({
         email: user,
@@ -275,13 +284,13 @@ async function checkin() {
         inExpires = true;
       }
 
-      if (inExpires && char === ',' && nextChar === ' ') {
+      if (inExpires && char === "," && nextChar === " ") {
         // Expires 里的逗号，跳过
         currentCookie += char;
         continue;
       }
 
-      if (!inExpires && char === ',' && nextChar === ' ') {
+      if (!inExpires && char === "," && nextChar === " ") {
         // 多个 cookie 之间的分隔符
         cookieArray.push(currentCookie.trim());
         currentCookie = "";
@@ -289,7 +298,7 @@ async function checkin() {
         continue;
       }
 
-      if (inExpires && char === ';' && nextChar === ' ') {
+      if (inExpires && char === ";" && nextChar === " ") {
         // Expires 结束
         inExpires = false;
       }
@@ -303,14 +312,14 @@ async function checkin() {
 
     // 提取每个 cookie 的 name=value 部分
     const cookies = cookieArray
-      .map(cookie => {
+      .map((cookie) => {
         const firstSemiColon = cookie.indexOf(";");
         if (firstSemiColon === -1) {
           return cookie.trim();
         }
         return cookie.substring(0, firstSemiColon).trim();
       })
-      .filter(cookie => cookie.includes("="))
+      .filter((cookie) => cookie.includes("="))
       .join("; ");
 
     log("提取的 Cookie:", cookies);
@@ -321,27 +330,31 @@ async function checkin() {
       headers: {
         Cookie: cookies,
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Accept: "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Origin": domain,
-        "Referer": `${domain}/user`,
+        Origin: domain,
+        Referer: `${domain}/user`,
       },
     });
 
     const responseText = await checkinResponse.text();
 
     // 检查是否返回了 HTML（未认证）
-    if (responseText.trim().startsWith("<!DOCTYPE") || responseText.trim().startsWith("<html")) {
+    if (
+      responseText.trim().startsWith("<!DOCTYPE") ||
+      responseText.trim().startsWith("<html")
+    ) {
       log("签到接口返回 HTML，可能需要重新登录", {
         status: checkinResponse.status,
         contentType: checkinResponse.headers.get("content-type"),
-        responsePreview: responseText.substring(0, 200)
+        responsePreview: responseText.substring(0, 200),
       });
       throw new Error(
         `签到接口返回登录页面，Cookie 可能已失效或 IP 被拦截。\n` +
-        `Content-Type: ${checkinResponse.headers.get("content-type")}\n` +
-        `建议检查：\n1. 账号是否被封禁\n2. Cloudflare IP 是否被机场屏蔽`
+          `Content-Type: ${checkinResponse.headers.get("content-type")}\n` +
+          `建议检查：\n1. 账号是否被封禁\n2. Cloudflare IP 是否被机场屏蔽`,
       );
     }
 
