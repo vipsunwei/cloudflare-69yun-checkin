@@ -210,6 +210,90 @@ async function sendWechatNotification(msg) {
   }
 }
 
+// Cookie 解析函数
+function extractCookies(response) {
+  const cookieHeader = response.headers.get("set-cookie");
+  if (!cookieHeader) return [];
+
+  const cookieArray = [];
+  let currentCookie = "";
+  let inExpires = false;
+
+  for (let i = 0; i < cookieHeader.length; i++) {
+    const char = cookieHeader[i];
+    const nextChar = cookieHeader[i + 1];
+
+    if (cookieHeader.substring(i).startsWith("Expires=")) {
+      inExpires = true;
+    }
+
+    if (inExpires && char === "," && nextChar === " ") {
+      currentCookie += char;
+      continue;
+    }
+
+    if (!inExpires && char === "," && nextChar === " ") {
+      cookieArray.push(currentCookie.trim());
+      currentCookie = "";
+      i++;
+      continue;
+    }
+
+    if (inExpires && char === ";" && nextChar === " ") {
+      inExpires = false;
+    }
+
+    currentCookie += char;
+  }
+
+  if (currentCookie.trim()) {
+    cookieArray.push(currentCookie.trim());
+  }
+
+  // 提取每个 cookie 的 name=value 部分
+  const pairs = cookieArray
+    .map((cookie) => {
+      const firstSemiColon = cookie.indexOf(";");
+      if (firstSemiColon === -1) {
+        return cookie.trim();
+      }
+      return cookie.substring(0, firstSemiColon).trim();
+    })
+    .filter((cookie) => cookie.includes("="));
+
+  return pairs;
+}
+
+// Cookie 映射函数
+function cookieMap(pairs) {
+  const map = new Map();
+  for (const pair of pairs) {
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx > 0) map.set(pair.substring(0, eqIdx).trim(), pair);
+  }
+  return map;
+}
+
+// 合并 Cookie 函数
+function mergeCookies(existing, newPairs) {
+  const map = cookieMap(existing);
+  for (const pair of newPairs) {
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx > 0) map.set(pair.substring(0, eqIdx).trim(), pair);
+  }
+  return Array.from(map.values());
+}
+
+// Cookie 转字符串函数
+function cookieString(pairs) {
+  return pairs.join("; ");
+}
+
+// Cookie 名称列表函数
+function cookieNameList(pairs) {
+  return pairs.map((p) => p.split("=")[0]).join(", ");
+}
+
 // 机场签到逻辑
 async function checkin() {
   try {
@@ -226,6 +310,26 @@ async function checkin() {
       `📢 企业微信推送: ${QYWXKEY ? "✅ 已启用" : "❌ 未启用"}\n` +
       `⏳ 正在签到中...`;
 
+    // Step 1: 访问登录页获取初始会话 Cookie
+    log("访问站点获取初始会话...");
+    const initResponse = await fetch(`${domain}/auth/login`, {
+      method: "GET",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+
+    let allCookies = extractCookies(initResponse);
+    if (allCookies.length > 0) {
+      log(`初始 Cookie: ${cookieNameList(allCookies)}`);
+    } else {
+      log("初始访问未获取到 Cookie");
+    }
+
+    // Step 2: 登录（携带初始 Cookie 以绑定会话）
+    log(`请求登录接口: ${domain}/auth/login`);
     const loginResponse = await fetch(`${domain}/auth/login`, {
       method: "POST",
       headers: {
@@ -236,6 +340,7 @@ async function checkin() {
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         Origin: domain,
         Referer: `${domain}/auth/login`,
+        Cookie: cookieString(allCookies),
       },
       body: JSON.stringify({
         email: user,
@@ -258,119 +363,156 @@ async function checkin() {
       throw new Error(`登录失败: ${loginJson.msg || "未知错误"}`);
     }
 
-    const cookieHeader = loginResponse.headers.get("set-cookie");
-    log("获取到的 Set-Cookie 头:", cookieHeader);
-
-    if (!cookieHeader) {
-      throw new Error("登录成功但未收到 Cookie");
+    // 合并登录后的 Cookie
+    const loginCookies = extractCookies(loginResponse);
+    allCookies = mergeCookies(allCookies, loginCookies);
+    if (allCookies.length === 0) {
+      throw new Error("未能获取到有效的 Cookie");
     }
+    log(`登录后 Cookie (${allCookies.length}): ${cookieNameList(allCookies)}`);
 
-    // 正确解析 Set-Cookie 头
-    // Set-Cookie 格式: name1=value1; Expires=...; Path=/, name2=value2; Expires=...; Path=/, ...
-    // 每个 cookie 后的属性之间用 ; 分隔，多个 cookie 之间用 , 分隔
-    // 但是在 Expires=xxx, xxx GMT 里的逗号不应该被当作分隔符
-    const cookieArray = [];
+    // Step 3: 等待会话就绪
+    log("验证会话状态...");
+    const maxSessionChecks = 6;
+    let sessionReady = false;
 
-    // 先按 , 分割，但要跳过 Expires 里面的逗号
-    let currentCookie = "";
-    let inExpires = false;
+    for (let sc = 1; sc <= maxSessionChecks; sc++) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, sc === 1 ? 1500 : 2000),
+      );
 
-    for (let i = 0; i < cookieHeader.length; i++) {
-      const char = cookieHeader[i];
-      const nextChar = cookieHeader[i + 1];
+      const verifyResponse = await fetch(`${domain}/user`, {
+        method: "GET",
+        headers: {
+          Cookie: cookieString(allCookies),
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          Referer: `${domain}/auth/login`,
+        },
+        redirect: "manual",
+      });
 
-      // 检测是否在 Expires 字段里
-      if (cookieHeader.substring(i).startsWith("Expires=")) {
-        inExpires = true;
+      const verifyStatus = verifyResponse.status;
+      // 合并验证响应的 Cookie
+      const verifyCookies = extractCookies(verifyResponse);
+      if (verifyCookies.length > 0) {
+        allCookies = mergeCookies(allCookies, verifyCookies);
       }
 
-      if (inExpires && char === "," && nextChar === " ") {
-        // Expires 里的逗号，跳过
-        currentCookie += char;
-        continue;
-      }
-
-      if (!inExpires && char === "," && nextChar === " ") {
-        // 多个 cookie 之间的分隔符
-        cookieArray.push(currentCookie.trim());
-        currentCookie = "";
-        i++; // 跳过空格
-        continue;
-      }
-
-      if (inExpires && char === ";" && nextChar === " ") {
-        // Expires 结束
-        inExpires = false;
-      }
-
-      currentCookie += char;
-    }
-
-    if (currentCookie.trim()) {
-      cookieArray.push(currentCookie.trim());
-    }
-
-    // 提取每个 cookie 的 name=value 部分
-    const cookies = cookieArray
-      .map((cookie) => {
-        const firstSemiColon = cookie.indexOf(";");
-        if (firstSemiColon === -1) {
-          return cookie.trim();
+      if (verifyStatus === 200 || verifyStatus === 304) {
+        log(`✓ 会话验证通过 (第 ${sc} 次检查)`);
+        sessionReady = true;
+        break;
+      } else if (verifyStatus >= 300 && verifyStatus < 400) {
+        if (sc < maxSessionChecks) {
+          log(
+            `会话尚未就绪 (HTTP ${verifyStatus})，等待重试... (${sc}/${maxSessionChecks})`,
+          );
+        } else {
+          log(
+            `会话始终未就绪 (HTTP ${verifyStatus})，已尝试 ${maxSessionChecks} 次`,
+          );
         }
-        return cookie.substring(0, firstSemiColon).trim();
-      })
-      .filter((cookie) => cookie.includes("="))
-      .join("; ");
+      } else {
+        log(`会话验证异常 (HTTP ${verifyStatus})，跳过等待`);
+        sessionReady = true;
+        break;
+      }
+    }
 
-    log("提取的 Cookie:", cookies);
+    if (!sessionReady) {
+      throw new Error(
+        "会话验证失败: 登录成功但 Session 始终未就绪",
+      );
+    }
+
+    // Step 4: 签到
     await new Promise((resolve) => setTimeout(resolve, 1000));
+    log("正在发送签到请求...");
+    log(`签到使用 Cookie: ${cookieNameList(allCookies)}`);
 
     const checkinResponse = await fetch(`${domain}/user/checkin`, {
       method: "POST",
       headers: {
-        Cookie: cookies,
-        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookieString(allCookies),
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         Origin: domain,
         Referer: `${domain}/user`,
+        "X-Requested-With": "XMLHttpRequest",
       },
+      redirect: "manual",
     });
 
+    const checkinSetCookies = extractCookies(checkinResponse);
+    log(`签到响应状态码: ${checkinResponse.status}`);
+    if (checkinSetCookies.length > 0) {
+      log(`签到响应 Set-Cookie: ${cookieNameList(checkinSetCookies)}`);
+    }
+
+    // 检测重定向（通常意味着 session 失效）
+    if (
+      checkinResponse.status >= 300 &&
+      checkinResponse.status < 400
+    ) {
+      const location =
+        checkinResponse.headers.get("location") || "未知";
+      // 诊断信息：打印所有发送的 cookie 值（名称+值前4字符）
+      const cookieDiag = allCookies
+        .map((p) => {
+          const eq = p.indexOf("=");
+          const name = p.substring(0, eq);
+          const val = p.substring(eq + 1);
+          return `${name}=${val.substring(0, 4)}...`;
+        })
+        .join(", ");
+      log(`诊断 Cookie: ${cookieDiag}`);
+      throw new Error(
+        `签到请求被重定向 (HTTP ${checkinResponse.status}) -> ${location}，Cookie/Session 失效`,
+      );
+    }
+
+    if (!checkinResponse.ok) {
+      throw new Error(
+        `签到请求失败 (HTTP ${checkinResponse.status})`,
+      );
+    }
+
     const responseText = await checkinResponse.text();
+    const contentType =
+      checkinResponse.headers.get("content-type") || "";
+    log(`签到响应 Content-Type: ${contentType}`);
 
     // 检查是否返回了 HTML（未认证）
     if (
       responseText.trim().startsWith("<!DOCTYPE") ||
       responseText.trim().startsWith("<html")
     ) {
-      log("签到接口返回 HTML，可能需要重新登录", {
-        status: checkinResponse.status,
-        contentType: checkinResponse.headers.get("content-type"),
-        responsePreview: responseText.substring(0, 200),
-      });
       throw new Error(
         `签到接口返回登录页面，Cookie 可能已失效或 IP 被拦截。\n` +
-          `Content-Type: ${checkinResponse.headers.get("content-type")}\n` +
+          `Content-Type: ${contentType}\n` +
           `建议检查：\n1. 账号是否被封禁\n2. Cloudflare IP 是否被机场屏蔽`,
       );
     }
 
+    let checkinResult;
     try {
-      const checkinResult = JSON.parse(responseText);
+      checkinResult = JSON.parse(responseText);
       log("签到响应:", checkinResult);
-      if (checkinResult.ret === 1) {
-        qiandaoRes = `✅ 签到成功 ✅\n🎉 ${checkinResult.msg}`;
-      } else {
-        qiandaoRes = `⚠️ 签到失败 ⚠️\n${checkinResult.msg || "未知原因"}`;
-      }
     } catch (e) {
-      log("解析签到响应失败", { error: e.message });
       throw new Error(
-        `解析签到响应失败: ${e.message}\n\n原始响应: ${responseText.substring(0, 500)}`,
+        `解析签到响应失败 (HTTP ${checkinResponse.status}): ${responseText.substring(0, 200)}...`,
       );
+    }
+
+    if (checkinResult.ret === 1) {
+      qiandaoRes = `✅ 签到成功 ✅\n🎉 ${checkinResult.msg}`;
+    } else {
+      qiandaoRes = `⚠️ 签到失败 ⚠️\n${checkinResult.msg || "未知原因"}`;
     }
 
     await sendWechatNotification(qiandaoRes);
